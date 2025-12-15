@@ -1,0 +1,217 @@
+name: Snyk Vulnerability Verification
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  snyk-verify:
+    name: Verify Snyk Fixes
+    runs-on: ubuntu-latest
+
+    # Only run on PRs created by Renovate or containing DevRev ticket references
+    if: |
+      contains(github.event.pull_request.title, '[DevRev:') ||
+      contains(github.event.pull_request.body, 'DevRev') ||
+      github.event.pull_request.user.login == 'renovate[bot]'
+
+    steps:
+      - name: Checkout PR branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup Node.js (if needed)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Setup Python (if needed)
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          # Detect package manager and install deps
+          if [ -f "package.json" ]; then
+            npm install
+          elif [ -f "requirements.txt" ]; then
+            pip install -r requirements.txt
+          elif [ -f "pom.xml" ]; then
+            mvn install -DskipTests
+          elif [ -f "go.mod" ]; then
+            go mod download
+          fi
+
+      - name: Run Snyk test
+        uses: snyk/actions/node@master  # Change based on your ecosystem
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        continue-on-error: true
+        with:
+          command: test
+          args: --severity-threshold=high --json-file-output=snyk-results.json
+
+      - name: Analyze Snyk results
+        id: analyze
+        run: |
+          if [ -f "snyk-results.json" ]; then
+            # Parse Snyk results
+            VULNERABILITIES=$(jq '.vulnerabilities | length' snyk-results.json)
+            CRITICAL=$(jq '[.vulnerabilities[] | select(.severity=="critical")] | length' snyk-results.json)
+            HIGH=$(jq '[.vulnerabilities[] | select(.severity=="high")] | length' snyk-results.json)
+            MEDIUM=$(jq '[.vulnerabilities[] | select(.severity=="medium")] | length' snyk-results.json)
+            LOW=$(jq '[.vulnerabilities[] | select(.severity=="low")] | length' snyk-results.json)
+
+            echo "total=$VULNERABILITIES" >> $GITHUB_OUTPUT
+            echo "critical=$CRITICAL" >> $GITHUB_OUTPUT
+            echo "high=$HIGH" >> $GITHUB_OUTPUT
+            echo "medium=$MEDIUM" >> $GITHUB_OUTPUT
+            echo "low=$LOW" >> $GITHUB_OUTPUT
+
+            # Determine status
+            if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+              echo "status=⚠️ Vulnerabilities Still Present" >> $GITHUB_OUTPUT
+              echo "passed=false" >> $GITHUB_OUTPUT
+            elif [ "$VULNERABILITIES" -gt 0 ]; then
+              echo "status=✅ High/Critical Issues Fixed (Low/Medium remain)" >> $GITHUB_OUTPUT
+              echo "passed=true" >> $GITHUB_OUTPUT
+            else
+              echo "status=✅ All Vulnerabilities Fixed" >> $GITHUB_OUTPUT
+              echo "passed=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "status=❌ Snyk test failed" >> $GITHUB_OUTPUT
+            echo "total=unknown" >> $GITHUB_OUTPUT
+            echo "passed=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Extract DevRev Ticket ID
+        id: extract_ticket
+        run: |
+          # Extract ticket ID from PR title: [DevRev: ISS-123]
+          TICKET_ID=$(echo "${{ github.event.pull_request.title }}" | grep -oP '\[DevRev:\s*\K[A-Z]+-\d+' || echo "")
+          echo "ticket_id=$TICKET_ID" >> $GITHUB_OUTPUT
+          echo "Found DevRev Ticket ID: $TICKET_ID"
+
+      - name: Notify DevRev of verification results
+        if: steps.extract_ticket.outputs.ticket_id != ''
+        run: |
+          # Send verification results to DevRev webhook
+          # This webhook should be handled by a new function in your snap-in
+
+          TICKET_ID="${{ steps.extract_ticket.outputs.ticket_id }}"
+
+          # Construct payload
+          PAYLOAD=$(cat <<EOF
+          {
+            "source": "github-actions",
+            "event_type": "snyk_verification",
+            "ticket_id": "$TICKET_ID",
+            "pr_number": ${{ github.event.pull_request.number }},
+            "pr_url": "${{ github.event.pull_request.html_url }}",
+            "pr_title": "${{ github.event.pull_request.title }}",
+            "repository": "${{ github.repository }}",
+            "verification_status": "${{ steps.analyze.outputs.status }}",
+            "passed": ${{ steps.analyze.outputs.passed }},
+            "vulnerabilities": {
+              "total": ${{ steps.analyze.outputs.total }},
+              "critical": ${{ steps.analyze.outputs.critical }},
+              "high": ${{ steps.analyze.outputs.high }},
+              "medium": ${{ steps.analyze.outputs.medium }},
+              "low": ${{ steps.analyze.outputs.low }}
+            },
+            "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          }
+          EOF
+          )
+
+          echo "Sending verification results to DevRev..."
+
+          # Send to DevRev webhook (if configured)
+          if [ -n "${{ secrets.DEVREV_VERIFICATION_WEBHOOK }}" ]; then
+            curl -X POST "${{ secrets.DEVREV_VERIFICATION_WEBHOOK }}" \
+              -H "Content-Type: application/json" \
+              -H "X-GitHub-Event: snyk_verification" \
+              -d "$PAYLOAD" \
+              --fail-with-body || echo "Failed to notify DevRev"
+          else
+            echo "DEVREV_VERIFICATION_WEBHOOK secret not configured, skipping DevRev notification"
+          fi
+
+      - name: Comment PR with results
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const total = '${{ steps.analyze.outputs.total }}';
+            const critical = '${{ steps.analyze.outputs.critical }}' || '0';
+            const high = '${{ steps.analyze.outputs.high }}' || '0';
+            const medium = '${{ steps.analyze.outputs.medium }}' || '0';
+            const low = '${{ steps.analyze.outputs.low }}' || '0';
+            const status = '${{ steps.analyze.outputs.status }}';
+            const ticketId = '${{ steps.extract_ticket.outputs.ticket_id }}';
+
+            const body = `## 🔒 Snyk Vulnerability Verification
+
+${status}
+
+${ticketId ? `**DevRev Ticket:** ${ticketId}` : ''}
+
+### Scan Results
+
+| Severity | Count |
+|----------|-------|
+| 🔴 Critical | ${critical} |
+| 🟠 High | ${high} |
+| 🟡 Medium | ${medium} |
+| 🟢 Low | ${low} |
+| **Total** | **${total}** |
+
+### Recommendation
+
+${parseInt(critical) + parseInt(high) > 0 ?
+  '⚠️ **This PR does not fully resolve high/critical vulnerabilities.** Additional updates may be needed.' :
+  '✅ **This PR successfully resolves high/critical vulnerabilities.** Safe to merge after review.'
+}
+
+---
+<sub>🤖 Automated Snyk scan by [Snyk Auto-Remediation Bot](https://github.com/devrev)</sub>
+            `;
+
+            // Find existing comment
+            const comments = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+
+            const existingComment = comments.data.find(comment =>
+              comment.body.includes('🔒 Snyk Vulnerability Verification')
+            );
+
+            if (existingComment) {
+              // Update existing comment
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existingComment.id,
+                body: body
+              });
+            } else {
+              // Create new comment
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: body
+              });
+            }
+
+      - name: Upload Snyk results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: snyk-results
+          path: snyk-results.json
