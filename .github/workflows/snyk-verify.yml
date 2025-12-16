@@ -157,7 +157,7 @@ jobs:
 
 ${status}
 
-${ticketId ? `**DevRev Ticket:** ${ticketId}` : ''}
+${ticketId ? '**DevRev Ticket:** ' + ticketId : ''}
 
 ### Scan Results
 
