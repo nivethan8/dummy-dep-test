@@ -4,7 +4,7 @@ go 1.24.3
 
 require (
 	github.com/google/uuid v1.5.0
-	go.uber.org/zap v1.26.0
+	go.uber.org/zap v1.27.1
 	golang.org/x/sync v0.6.0
 )
 
