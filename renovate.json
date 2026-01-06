@@ -26,6 +26,22 @@
         "Security vulnerability fix"
       ],
       "commitMessageSuffix": "[DevRev: ISS-6]"
+    },
+    {
+      "matchPackageNames": [
+        "golang.org/x/sync"
+      ],
+      "enabled": true,
+      "labels": [
+        "security",
+        "devrev:ISS-7"
+      ],
+      "commitMessageTopic": "{{{depName}}} security update",
+      "commitMessageSuffix": "[DevRev: ISS-7]",
+      "prBodyNotes": [
+        "DevRev Ticket: ISS-7",
+        "Security vulnerability fix"
+      ]
     }
   ]
 }
