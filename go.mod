@@ -1,6 +1,6 @@
 module github.com/devrev/dummy-dep-test
 
-go 1.24.3
+go 1.26.0
 
 require (
 	github.com/gin-gonic/gin v1.9.0
@@ -10,7 +10,7 @@ require (
 	github.com/sirupsen/logrus v1.9.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/crypto v0.46.0
-	golang.org/x/sync v0.19.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
